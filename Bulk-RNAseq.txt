@@ -1,0 +1,220 @@
+	► Library 
+
+library(DESeq2)
+library(dplyr)
+library(ggplot2)
+library(pheatmap)
+library( gtools )
+library( tidyverse )
+library( magrittr )
+library( stringr )
+
+
+	► Read data
+Sample_1_1 <- read.table('path/filename.txt')
+Sample_1_2 <- read.table('path/filename.txt')
+Sample_2_1 <- read.table('path/filename.txt')
+Sample_2_2 <- read.table('path/filename.txt')
+
+
+	► Merge dataset
+combined_data <- merge(Sample_1_1, Sample_1_2, by="row.names", suffixes=c("_Sample_1_1", "_Sample_1_2"))
+
+# keep Row.names ，remove other duplicated Row.names column
+combined_data <- combined_data[, !duplicated(colnames(combined_data))]
+
+reference_genes <- rownames(combined_data)
+
+# Use the match() function to align the gene list in another dataframe to match the order of the standard/first dataset.
+(it may be unnecessary if your dataset is similar to each other)
+Sample_1_1 <- Sample_1_1[match(reference_genes, rownames(Sample_1_1)), ]
+Sample_1_2 <- Sample_1_2[match(reference_genes, rownames(Sample_1_2)), ]
+Sample_2_1 <- Sample_2_1[match(reference_genes, rownames(Sample_2_1)), ]
+Sample_2_2 <- Sample_2_2[match(reference_genes, rownames(Sample_2_2)), ]
+
+list_of_samples <- list(Sample_1_1, Sample_1_2, Sample_2_1, Sample_2_2 )
+
+gene_names <- Sample_1_1$V1
+
+# Use the lapply() function to extract the V2 column from each sample and create a new dataframe with gene names. 
+#the first column is gene names
+expression_matrix <- data.frame(
+  gene = gene_names,  
+  do.call(cbind, lapply(list_of_samples, function(df) df$V2))  
+)
+
+# set column names as sample names(also unnecessary)
+colnames(expression_matrix) <- c( "gene", "Sample_1_1", "Sample_1_2", "Sample_2_1", "Sample_2_2")
+colnames(expression_matrix)#find colnames of the matrix
+
+#now it's the final dataset
+expression_matrix
+
+ 
+	► Sequencing depth comparison
+	 Method1
+total_counts_Sample_1_1 <- sum(Sample_1_1$V2)
+total_counts_Sample_1_2 <- sum(Sample_1_2$V2)
+total_counts_Sample_2_1 <- sum(Sample_2_1$V2)
+total_counts_Sample_2_2 <- sum(Sample_2_2$V2)
+
+sample_names <- c("Sample_1_1", "Sample_1_2", "Sample_2_1", "Sample_2_2")
+
+df_counts <- data.frame(Sample = sample_names, Counts = c(total_counts_Sample_1_1,total_counts_Sample_1_2, total_counts_Sample_2_1,total_counts_Sample_2_2))
+
+
+#create sample color vector 
+sample_colors <- ifelse(grepl("adult", df_counts$Sample), "#634293", "#d0f0c0")
+
+seqdepth <- ggplot(df_counts, aes(x = Sample, y = Counts, fill = Sample)) +
+  geom_bar(stat = "identity", color = "black") +  
+  scale_fill_manual(values = sample_colors) +     
+  theme_minimal() +                                
+  ggtitle("Sequencing Depth Comparison Between Samples") + 
+  xlab("Samples") + 
+  ylab("Total Reads (Counts)") + 
+  theme(
+    plot.title = element_text(hjust = 0.5),        
+    panel.border = element_rect(color = "black", fill = NA, size = 1.5),     
+    panel.grid.major = element_blank(),             
+    panel.grid.minor = element_blank()             
+  )
+
+
+	 Method2
+col_sums <- sapply(expression_matrix, function(x) if(is.numeric(x)) sum(x, na.rm = TRUE) else NA)
+print(col_sums)
+
+col_sums <- col_sums[!is.na(col_sums)]
+
+df_counts <- data.frame(Sample = names(col_sums), 
+                      Sum = col_sums)
+
+#seqdepth <- 
+  ggplot(df_counts, aes(x = Sample, y = Sum, fill = Sample)) +
+  geom_bar(stat = "identity", color = "black") +  
+  #scale_fill_manual(values = sample_colors) +     
+  theme_minimal() +                                
+  ggtitle("Sequencing Depth Comparison Between Samples") + 
+  xlab("Samples") + 
+  ylab("Total Reads (Counts)") + 
+  theme(
+    plot.title = element_text(hjust = 0.5),        
+    panel.border = element_rect(color = "black", fill = NA, size = 1.5),     
+    panel.grid.major = element_blank(),             
+    panel.grid.minor = element_blank()             
+  )
+
+ggsave('path/file.pdf', plot = seqdepth, width = *, height =*) #just set the size at *
+
+	► Filter expression genes
+#use grep function to filter specific genes(such as tRNA,  rRNA, mitochondial gene, sRNA)。
+l.genes.rm <- c(
+grep("tRNA", expression_matrix$gene, ignore.case = T, value = T),
+grep("rRNA", expression_matrix$gene, ignore.case = T, value = T),
+grep("^mt", expression_matrix$gene, ignore.case = T, value = T),
+grep("sRNA", expression_matrix$gene, ignore.case = T, value = T),
+grep(":", expression_matrix$gene, ignore.case = T, value = T),
+grep("_", expression_matrix$gene, ignore.case = T, value = T),
+grep("lncRNA", expression_matrix$gene, ignore.case = T, value = T)
+)
+
+#also filter low expressed genes 
+expression_matrix_filtered <- expression_matrix %>% 
+  filter( !(gene %in% l.genes.rm) ) %>% 
+  set_rownames(value = .$gene) %>% 
+  select( -gene ) %>% 
+  filter( rowSums(.) > 10) 
+
+	► DESeq data analysis
+# 1. transform the data to matrix , remove the genelist/first column.(already done in the Filter expression genes step.
+
+# 2. create sample list (condition means different groups) 
+sample_info <- data.frame(
+  row.names = colnames(expression_matrix_filtered),
+  condition = c("Sample_1", "Sample_1", "Sample_2", "Sample_2")
+)
+# make sure condition is factor type
+sample_info$condition <- as.factor(sample_info$condition)
+
+# 3. create DESeqDataSet object 
+dds <- DESeqDataSetFromMatrix(countData = expression_matrix_filtered, 
+                              colData = sample_info, 
+                              design = ~ condition)
+
+# 4. normalization and differential gene expression
+dds <- DESeq(dds)
+
+# 5. aquire results
+res <- results(dds)
+
+head(res)
+
+df.norm.deseq2 <- counts(dds, normalized=TRUE) %>% 
+  as.data.frame()
+
+	► Differential gene expression analysis (pheatmap & vocalno)(maybe you can justify the within-group difference before PCA)
+	 pheatmap
+sig_genes <- subset(res, padj < 0.05)
+sig_genes_names <- rownames(sig_genes)
+
+exprs_data <- df.norm.deseq2[sig_genes_names, ]
+
+exprs_data_scaled <- t(scale(t(exprs_data)))
+
+df.norm.deseq2_scaled <- t(scale(t(df.norm.deseq2)))
+
+pheatmap(exprs_data_scaled, 
+         cluster_rows = TRUE, 
+         cluster_cols = FALSE, 
+         show_rownames = FALSE, 
+         show_colnames = TRUE, 
+         color = colorRampPalette(c("#4575b4", "white", "#d73027"))(50), 
+         breaks = seq(-2, 2, length.out = 51)) 
+	 Vocalno
+res <- results(dds)
+
+volcano_data <- as.data.frame(res)
+volcano_data$significant <- volcano_data$padj < 0.05 & abs(volcano_data$log2FoldChange) > 2
+
+significant_genes <- volcano_data %>% 
+  filter(significant == TRUE)
+
+volcano_data <- cbind(gene = rownames(volcano_data), volcano_data)  
+rownames(volcano_data) <- NULL 
+volcano_data <- na.omit(volcano_data)
+
+#volcano <- 
+  ggplot(volcano_data, aes(x=log2FoldChange, y=-log10(padj), color=significant)) +
+  geom_point(alpha=0.5) +
+  scale_color_manual(values=c('#d0f0c0', '#634293')) +
+  theme_minimal() +
+  theme(panel.border = element_rect(colour = "black", fill=NA, size=1),
+        axis.line = element_line(colour = "black")) + 
+  labs(x="Log2 Fold Change", y="-Log10(p-value)", color="Significant")
+  
+  #geom_text(data = highlight_genes, aes(label=gene), vjust=1, hjust=1, size=3)
+#ggsave('volcano.pdf',volcano,width = 6,height =4)
+
+	► PCA analysis
+exprs_data <- assay(dds)
+
+exprs_data <- na.omit(exprs_data)
+#next two methods can make PCA results better
+log_exprs_data <- log2(exprs_data+1)#log2change
+
+log_exprs_data <- scale(log_exprs_data)
+log_exprs_data <- t(scale(t(log_exprs_data),center=TRUE,scale=F))#zscore nomorlization
+
+# PCA analysis
+pca_res <- prcomp(t(log_exprs_data))
+
+pca_data <- as.data.frame(pca_res$x)
+pca_data$condition <- colData(dds)$condition
+
+#PCA <- 
+  ggplot(pca_data, aes(x = PC1, y = PC2, color = condition)) +
+  geom_point(size = 3) +  
+  theme_minimal() +
+  labs(x = "PC1", y = "PC2", color = "Condition") +
+  theme(panel.border = element_rect(color = "black", fill = NA, size = 1))
